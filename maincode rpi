@@ -1,0 +1,173 @@
+from signal import signal, SIGTERM, SIGHUP
+from rpi_lcd import LCD 
+from serial import Serial
+import RPi.GPIO as GPIO
+import time
+from time import sleep
+import datetime
+
+GPIO.setwarnings(False)
+GPIO.setmode(GPIO.BOARD)
+
+lcd = LCD() 
+
+class Machine:
+
+    def __init__(self):
+        self.arduino = Serial('/dev/ttyUSB0', 9600, timeout = 1)
+        self.arduino.reset_input_buffer()
+        self.weight = '0'
+        self.temperature = '0'
+        self.started = False
+
+    def safe_exit(signum, frame): 
+        exit(1)
+
+    def button_callback(self, channel):
+        self.started = not self.started
+
+    def send_command(self, command: int):
+        while True:
+            self.arduino.write(bytes(str(command)+'\n','utf-8'))
+            response = self.get_arduino_response()
+            if(response == 'ok'):
+                break
+ 
+    def get_arduino_response(self):
+        try:
+            response = self.arduino.readline().decode('utf-8').rstrip()
+        except UnicodeDecodeError:
+            response = self.arduino.readline().decode('utf-8').rstrip()
+        print(response)
+        return response
+ 
+    def lcd_show(self, message1, message2):
+        signal(SIGTERM, safe_exit)
+        signal(SIGHUP, safe_exit)
+        self.lcd.clear()
+
+    def get_weight(self):
+        self.send_command(1)
+        response = self.get_arduino_response()
+        while not response:
+            response = self.get_arduino_response()
+        weight = float(response)
+        return weight
+    
+    def get_temperature(self):
+        self.send_command(3)
+        temperature = float(self.get_arduino_response())
+        return temperature
+    
+    def activate_actuator(self):
+        self.send_command(2)
+
+    def activate_slicer(self):
+        self.send_command(4)
+
+    def activate_conveyor(self):
+        self.send_command(5)
+
+    # def activate_pulvurizer(self)
+    #     self.send_command(6)
+
+    def switch_arduino_1(self): 
+        self.arduino.close()
+        self.arduino = Serial('/dev/ttyUSB1', 9600, timeout = 1)
+        self.arduino.flush()
+
+    def switch_arduino_0(self): 
+        self.arduino.close()
+        self.arduino = Serial('/dev/ttyUSB0', 9600, timeout = 1)
+        self.arduino.flush()
+        
+        
+if __name__ == '__main__':
+
+    machine = Machine()
+
+    actuator_ready = True
+    slicer_started = False
+    conveyor_started = False
+    pulverizer_started = False
+    
+    actuator_start_time = datetime.datetime.now()
+    pulverizer_start_time = datetime.datetime.now()
+
+    start = datetime.datetime.now()
+    true_start = datetime.datetime.now()
+
+    lcd.text("Press the Button", 1)
+
+    GPIO.setup(10, GPIO.IN, pull_up_down = GPIO.PUD_DOWN)
+    GPIO.add_event_detect(10, GPIO.RISING, callback = machine.button_callback)
+    flag = 0
+    state = 0
+    while True:
+             
+        # state = GPIO.input(10)
+        # print(state)
+        # if state == 0:
+        #     sleep(0.5)
+        #     if flag == 0: 
+        #         flag = 0
+        #     else: 
+        #         flag = 1
+        #         if flag == 1:
+        #             state = 1
+
+        if machine.started:
+            if state == 0:
+                lcd.text("System", 1)
+                lcd.text("Initializing...", 2)
+                time.sleep(2)
+                lcd.clear()
+                state = 1
+            
+            if state == 1:
+                if actuator_ready:
+                    weight =  machine.get_weight()                        
+                    disweight = "Weight: " + '{:1.2f}'.format(weight) + " lbs" 
+                    lcd.text(disweight, 1)
+
+                    temperature = machine.get_temperature()
+                    distemp = "Temp: " + '{:1.2f}'.format(temperature)  + " C"
+                    lcd.text(distemp, 2)
+
+                    sleep(0.1)
+
+                    if weight >= 1.8 and weight <= 2.6:
+                        machine.activate_actuator()
+
+                        if not slicer_started and not conveyor_started:
+                            machine.switch_arduino_1()
+                            machine.activate_slicer()
+
+                            slicer_started = True
+
+                            machine.activate_conveyor()
+                            # start conveyor
+                            conveyor_started = True
+                            machine.switch_arduino_0()
+                                                    
+                        actuator_ready = False
+                        actuator_start_time = datetime.datetime.now()
+
+                if not actuator_ready and datetime.datetime.now() - actuator_start_time >= datetime.timedelta(seconds=10):
+                    actuator_ready = True
+
+                if datetime.datetime.now() - start >= datetime.timedelta(minutes=30) and not pulverizer_started:
+                    # activate_pulvurizer()
+                    # start pulvurizer
+                    pulverizer_started = True
+                    pulverizer_start_time = datetime.datetime.now()
+
+                if pulverizer_started and datetime.datetime.now() - pulverizer_start_time >= datetime.timedelta(minutes=10):
+                    # exit(activaite_pulverizer)
+                    # stop pulverizer
+                    pulverizer_started = False
+                    start = datetime.datetime.now()
+
+            # send to server
+        else:
+            pass
